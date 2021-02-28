@@ -21,7 +21,7 @@ class Point3:
     def __mul__(self, k):
         return Point3(k*self.x, k*self.y, k*self.z)
 
-    def __neg__(self, k):
+    def __neg__(self):
         return Point3(-self.x, -self.y, -self.z)
 
     def length(self):
@@ -40,7 +40,7 @@ class Point3:
 
     @staticmethod
     def cross(a,b):
-        return Point(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x)
+        return Point3(a.y*b.z-a.z*b.y, a.z*b.x-a.x*b.z, a.x*b.y-a.y*b.x)
     
     @staticmethod
     def lerp(a,b,t):
@@ -75,7 +75,7 @@ class Point2:
         s = 1/self.length()
         return Point2(s*self.x, s*self.y)
 
-    def __neg__(self, k):
+    def __neg__(self):
         return Point2(-self.x, -self.y)
 
     def rotate90(self):
@@ -121,6 +121,11 @@ class Polyhedron:
             self.color = color
             self.indices = indices
             self.m = len(indices)
+        def __repl__(self):
+            ii = ",".join([str(i) for i in self.indices])
+            return f"face({ii})"
+        def __str__(self):
+            return self.__repl__()
             
     def __init__(self, vertices, faces):
         self.vertices = vertices
@@ -142,93 +147,236 @@ class Polyhedron:
                     return (i,j)
         return None,None
 
+    def assert_integrity(self):
+        edges = set()
+        for face in self.faces:
+            m = face.m
+            assert len(face.indices) == m
+            assert m>=3
+            assert len(set(face.indices)) == m
+            for i in range(m):
+                a, b = face.indices[i], face.indices[(i+1)%m]
+                edge = a,b
+                assert edge not in edges, "Polyhedron with duplicated edges or misoriented faces"
+                edges.add(edge)
+        for a,b in edges:
+            # assert (b,a) in edges, "Polyhedron with holes"
+            pass
+
+        for face in self.faces:
+            pts = [self.vertices[j] for j in face.indices]
+            fc = sum(pts,Point3(0,0,0)) * (1.0/len(pts))
+            e0 = (pts[0]-fc).normalize()
+            e1 = pts[1]-fc
+            e1 = (e1-e0*Point3.dot(e0,e1)).normalize()
+            e2 = Point3.cross(e0,e1).normalize()
+            assert Point3.dot(Point3(0,0,0) - fc, e2) > 0.0
+            for i,p in enumerate(self.vertices):
+                w = Point3.dot(p-fc, e2)
+                assert w >= -1.0e-10, "Bad face orientation"
+
 
 # create a cube 
-def create_cube(r=1):
+def create_tetrahedron():
+    u = 1
     vertices = [Point3(x,y,z) for (x,y,z) in [
-        (-r,-r,-r),( r,-r,-r),(-r,r,-r),(r,r,-r),
-        (-r,-r,r),( r,-r,r),(-r,r,r),(r,r,r)]]
+        ( u, u, u),(-u,-u, u),(-u, u,-u),( u,-u,-u)]]
+    faces = [Polyhedron.Face(ii) for ii in [
+        (0,1,2),(1,0,3),(2,1,3),(0,2,3)]]
+
+    ph = Polyhedron(vertices, faces)
+    ph.assert_integrity()
+    return ph
+
+def create_cube():
+    u = 1
+    vertices = [Point3(x,y,z) for (x,y,z) in [
+        (-u,-u,-u),( u,-u,-u),(-u, u,-u),(u, u,-u),
+        (-u,-u, u),( u,-u, u),(-u, u, u),(u, u, u)]]
     faces = [Polyhedron.Face(ii) for ii in [
         (0,1,3,2),(4,6,7,5),(1,0,4,5),
         (3,1,5,7),(2,3,7,6),(0,2,6,4)]]
 
-    return Polyhedron(vertices, faces)
+    ph = Polyhedron(vertices, faces)
+    ph.assert_integrity()
+    return ph
+
+def create_octahedron():
+    u = 1
+    vertices = [Point3(x,y,z) for (x,y,z) in [
+        ( 0, u, 0),( u, 0, 0),(-u, 0, 0),
+        ( 0, 0, u),( 0, 0,-u),( 0,-u, 0)]]
+    faces = [Polyhedron.Face(ii) for ii in [
+        (0,1,3),(0,3,2),(0,2,4),(0,4,1),
+        (5,3,1),(5,2,3),(5,4,2),(5,1,4)]]
+
+    ph = Polyhedron(vertices, faces)
+    ph.assert_integrity()
+    return ph
+
+def create_icosahedron():
+    u = 1
+    f = (-1+5**0.5)/2
+    vertices = [Point3(x,y,z) for (x,y,z) in [
+        (-f, u, 0),( f, u, 0),(-f,-u, 0),( f,-u, 0),
+        (-1, 0, f),(-1, 0,-f),( 1, 0, f),( 1, 0,-f),
+        ( 0,-f, 1),( 0, f, 1),( 0,-f,-1),( 0, f,-1)]]
+    faces = [Polyhedron.Face(ii) for ii in [
+        (9,0,1),(9,1,6),(9,6,8),(9,8,4),(9,4,0),
+        (8,6,3),(8,3,2),(8,2,4),(2,3,10),(0,11,1),
+        (1,11,7),(6,1,7),(3,6,7),(10,3,7),(11,10,7),
+        (5,11,0),(5,0,4),(5,4,2),(5,2,10),(5,10,11)
+        ]]
+
+    ph = Polyhedron(vertices, faces)
+    ph.assert_integrity()
+    return ph
 
 
 
-        
-def clip(ph, plane):
-    ws = [plane.comp(p) for p in ph.vertices]
-    vertices = []
-    faces = []
+class Clipper:
+    """The class cuts polyhedron across a plane."""
 
-    vtb = {}
-    etb = {}
 
-    section_face_tb = {}
-    
-    def vp(i):
-        if i in vtb: return vtb[i]
-        j = len(vertices)
-        vertices.append(ph.vertices[i])
-        vtb[i] = j
+    def clip(self, ph, plane):
+        """Main method. Returns the (possibly empty) polyhedron part below the plane."""
+        self.ph = ph
+        self.plane = plane
+        self.ws = [plane.comp(p) for p in ph.vertices]
+        epsilon = 1.0e-8
+        self.ws = [w if abs(w)>epsilon else 0.0 for w in self.ws]
+        self.vertices = []
+        self.faces = []
+
+        self.vtb = {} # old-vertex => new-vertex
+        self.etb = {} # old-edge(a,b) => new-vertex
+
+        self.section_face_tb = {} # 
+
+        for i,face in enumerate(ph.faces):
+            self._process_face(i,face)
+
+        self._add_section_face()
+        result = Polyhedron(self.vertices, self.faces)
+        return result
+
+
+    def _vp(self, i):
+        if i in self.vtb: return self.vtb[i]
+        j = len(self.vertices)
+        self.vertices.append(self.ph.vertices[i])
+        self.vtb[i] = j
         return j
 
-    def ep(a,b):
+    def _ep(self, a,b):
         if a>b: a,b=b,a
-        if (a,b) in etb: return etb[(a,b)]
-        assert ws[a]*ws[b]<0.0
-        pa = ph.vertices[a]
-        pb = ph.vertices[b]
-        t = -ws[a]/(ws[b]-ws[a])
-        j = len(vertices)
-        vertices.append(Point3.lerp(pa, pb, t))
-        etb[(a,b)] = j
+        edge = (a,b)
+        wa = self.ws[a]
+        wb = self.ws[b]        
+        assert wa * wb < 0.0
+        if edge in self.etb: return self.etb[edge]
+        pa = self.ph.vertices[a]
+        pb = self.ph.vertices[b]
+        t = -wa/(wb-wa)
+        j = len(self.vertices)
+        self.vertices.append(Point3.lerp(pa, pb, t))
+        self.etb[edge] = j
         return j
-    
-    for i,face in enumerate(ph.faces):
+
+    def _process_zero_face(self, i, face):
+        new_face = [self._vp(j) for j in face.indices]
+        self.faces.append(Polyhedron.Face(new_face, face.color))
+
+
+    def _process_face(self, i, face):
         m = face.m
+        ws = self.ws
+        face_ws = [ws[j] for j in face.indices]
+        zm,inm,outm = 0,0,0
+        for w in  [ws[j] for j in face.indices]:
+            if w>0.0: outm += 1
+            elif w<0.0: inm += 1
+            else: zm += 0
+        if zm >= 3:
+            # face belong to cutting plane => pass it
+            assert inm == outm == 0
+            self._process_zero_face(i, face)
+            return
+
         new_face = []
         new_a, new_b = None, None
         for j in range(m):
             a,b = face.indices[j], face.indices[(j+1)%m]
+
             if ws[a]<0:
+                
                 if ws[b]<0:
-                    new_face.append(vp(b))
-                else:
-                    j = ep(a, b)
+                    j = self._vp(b)
+                    new_face.append(j)
+                elif ws[b]>0:
+                    j = self._ep(a, b)
+                    new_face.append(j)
                     assert new_b == None
                     new_b = j
+                else: # ws[b]==0
+                    j = self._vp(b)
                     new_face.append(j)
-            else:
+                    assert new_b == None
+                    new_b = j
+                    
+            elif ws[a]>0:                
+                
                 if ws[b]<0:
-                    j = ep(a, b)
+                    j = self._ep(a, b) 
+                    new_face.append(j)
+                    jb = self._vp(b)
+                    new_face.append(jb)
                     assert new_a == None
                     new_a = j
+                elif ws[b]==0:
+                    jb = self._vp(b)
+                    new_face.append(jb)
+                    assert new_a == None
+                    new_a = jb
+            
+            else: # ws[a] == 0
+
+                if ws[b]<0:
+                    j = self._vp(b) 
                     new_face.append(j)
-                    new_face.append(vp(b))
-                else:
-                    pass
-        assert new_face==[] or len(new_face)>=3
-        if new_face != []:
-            faces.append(Polyhedron.Face(new_face, face.color))
-        assert (new_a is None) == (new_b is None)
-        if new_a is not None:
-            assert new_a not in section_face_tb
-            section_face_tb[new_a] = new_b
+                elif ws[b] == 0:
+                    # segment a,b belongs to the cutting plane
+                    if inm > 0:
+                        j = self._vp(b) 
+                        new_face.append(j)
+                        
+                        # assert new_b == None
+                        new_a = j
 
-    if len(section_face_tb) >= 3:
-        section_face = [next(iter(section_face_tb))]
-        while True:
-            j = section_face_tb.get(section_face[-1],None)
-            if j == None: break
-            if j == section_face[0]: break
-            section_face.append(j)
-        if j == section_face[0]:
-            faces.append(Polyhedron.Face(section_face, 2))
+        if new_face != [] and len(new_face)>=3:
+            self.faces.append(Polyhedron.Face(new_face, face.color))
+            # print("  new face : ", ", ".join([str(self.vertices[j]) for j in new_face]))
+
+        # assert (new_a is None) == (new_b is None)
+        # print("  new edge : ", new_a, new_b)
+        if new_a is not None and new_b is not None and new_a != new_b:
+            assert new_a not in self.section_face_tb
+            self.section_face_tb[new_a] = new_b
+
+    def _add_section_face(self):
+        # print("section face: ", self.section_face_tb)
+        if len(self.section_face_tb) >= 3:
+            section_face = [next(iter(self.section_face_tb))]
+            while True:
+                j = self.section_face_tb.get(section_face[-1],None)
+                if j == None: break
+                if j == section_face[0]: break
+                section_face.append(j)
+            if j == section_face[0]:
+                self.faces.append(Polyhedron.Face(section_face, 2))
         
-    result = Polyhedron(vertices, faces)
-    return result
 
-    
+def clip(ph, plane):
+    clipper = Clipper()
+    return clipper.clip(ph,plane)
     
